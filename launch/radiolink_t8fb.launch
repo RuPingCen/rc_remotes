@@ -1,0 +1,13 @@
+<launch>
+  <node pkg="rc_remotes" type="rc_remotes" name="rc_remotes" output="screen">
+ 	  <param name="cmdvel_topic" value="/rc_remotes/cmd_vel" type="str" />
+	  <param name="dev" value="/dev/ttyUSB0" type="str" />
+	  <param name="baud" value="115200" type="int" />
+	  <param name="time_out" value="1000" type="int" />
+	  <param name="hz" value="20" type="int" />
+		<param name="show_message" value="0" type="int" /> <!--  是否打印接收机数据   -->
+		<param name="RC_K" value="1"  />
+		<param name="RC_MIN" value="213"  />
+		<param name="RC_MAX" value="1800"  />
+  </node>
+</launch>
