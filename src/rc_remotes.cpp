@@ -21,6 +21,7 @@
 
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Twist.h>
+#include <sensor_msgs/Joy.h> 
 
 #include <serial/serial.h>
 #include <std_msgs/String.h>
@@ -51,8 +52,8 @@ typedef struct
 	uint32_t cnt;
 	uint8_t available;
 	uint8_t update;
-	uint8_t type; // 1 DJI-DBUS   2 SBUS
-	uint8_t state;
+	uint8_t type; // 1 DJI-DBUS   2 SBUS 遥控器类型
+	uint8_t status;
 
 } rc_info_t;
 
@@ -60,13 +61,13 @@ rc_info_t rc;
 float RC_MIN = 0, RC_MAX = 2500, RC_K = 1; //遥控器摇杆通道输出的最小值、最大值、比例系数
 unsigned int init_times = 0;
 int sum_offset[4] = {0};
-int show_message =0;
+int show_message =0,publish_cmdvel=0;
 
 struct timeval time_val; // time varible
 struct timezone tz;
 double time_stamp;
 serial::Serial ros_ser;
-ros::Publisher cmdvel_pub;
+ros::Publisher cmdvel_pub,joy_pub;
 
 bool analy_uart_recive_data(std_msgs::String serial_data);
 bool publish_cmd_vel(void);
@@ -86,17 +87,18 @@ int main(int argc, char **argv)
 	//     sp.set_option(serial_port::stop_bits());
 	//     sp.set_option(serial_port::character_size(8));
 
-	string cmdvel_topic, dev;
+	string cmdvel_topic,joy_topic, dev;
 	int baud, time_out, hz;
 	ros::init(argc, argv, "mick robot");
 	ros::NodeHandle n("~");
-
-	n.param<std::string>("cmdvel_topic", cmdvel_topic, "/cmd_vel");
+	n.param<std::string>("joy_topic", joy_topic, "/rc_remote/joy");
+	n.param<std::string>("cmdvel_topic", cmdvel_topic, "/rc_remote/cmd_vel");
 	n.param<std::string>("dev", dev, "/dev/rc_remote");
 	n.param<int>("baud", baud, 115200);
 	n.param<int>("time_out", time_out, 1000);
 	n.param<int>("hz", hz, 50);
 	n.param<int>("show_message", show_message, 0);
+	n.param<int>("publish_cmdvel", publish_cmdvel, 0);
 	n.param<float>("RC_K", RC_K, 1);
 	n.param<float>("RC_MIN", RC_MIN, 0);
 	n.param<float>("RC_MAX", RC_MAX, 2500);
@@ -106,12 +108,17 @@ int main(int argc, char **argv)
 	ROS_INFO_STREAM("time_out:   " << time_out);
 	ROS_INFO_STREAM("hz:   " << hz);
 	ROS_INFO_STREAM("show_message:   " << show_message);
+	ROS_INFO_STREAM("publish_cmdvel:   " << publish_cmdvel);
 	ROS_INFO_STREAM("RC_K:   " << RC_K);
 	ROS_INFO_STREAM("RC_MIN:   " << RC_MIN);
 	ROS_INFO_STREAM("RC_MAX:   " << RC_MAX);
 	
 	//发布主题sensor
-	cmdvel_pub = n.advertise<geometry_msgs::Twist>(cmdvel_topic, 20); //定义要发布cmd主题
+	if(publish_cmdvel)
+	{
+		cmdvel_pub = n.advertise<geometry_msgs::Twist>(cmdvel_topic, 20); //定义要发布cmd主题
+	}
+	joy_pub = n.advertise<sensor_msgs::Joy>(joy_topic, 20);
 
 	// 开启串口模块
 	try
@@ -261,6 +268,8 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
 				rc.ch4 = (rc.ch4 << 8) + reviced_tem[i++];
 				rc.sw1 = reviced_tem[i++];
 				rc.sw2 = reviced_tem[i++];
+				rc.type = reviced_tem[i++];// 1 DJI-DBUS   2 SBUS 遥控器类型
+				rc.status = reviced_tem[i++];
 				rc.update = 0x01;
 				if (rc.ch1 >= (RC_MIN-200) && rc.ch1 <=(RC_MAX+200))
 				{
@@ -273,7 +282,8 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
 				if(show_message)
 				{
 					ROS_INFO_STREAM("RC_Remotes date  ch1: " << rc.ch1 << " ch2: " << rc.ch2
-														 << " ch3: " << rc.ch3 << " ch4: " << rc.ch4 << " sw1: " << rc.sw1 << " sw2: " << rc.sw2);
+									 << " ch3: " << rc.ch3 << " ch4: " << rc.ch4 << " sw1: " 
+									 << rc.sw1 << " sw2: " << rc.sw2<< " type: " << rc.type);
 				}
 				return true;
 			}
@@ -311,9 +321,10 @@ bool publish_cmd_vel(void)
 		}
 		else
 		{
-			if (rc.available == 1 && rc.sw1 != 1) //左侧开关拨到遥控器控制
+			if (rc.available == 1) 
 			{
 				geometry_msgs::Twist msg;
+				float ch1,ch2,ch3,ch4;
 				float speed_x, speed_y, speed_w;
 				float rc_k = 1;
 
@@ -326,19 +337,36 @@ bool publish_cmd_vel(void)
 				else
 					rc_k = 0;
 
-				speed_x = (rc.ch1 - rc.ch1_offset) / (RC_MAX - rc.ch1_offset);
-				if(abs(speed_x)<0.2) speed_x=0;
-				speed_y =0;
-				speed_w =(rc.ch2 - rc.ch2_offset) / (RC_MAX - rc.ch2_offset);
-				if(abs(speed_w)<0.2) speed_w=0;
+				ch1 = (rc.ch1 - rc.ch1_offset) / (RC_MAX - rc.ch1_offset);
+				if(abs(ch1)<0.2) ch1=0;
+				ch2 =(rc.ch2 - rc.ch2_offset) / (RC_MAX - rc.ch2_offset);
+				if(abs(ch2)<0.2) ch2=0;
+				ch3 = (rc.ch3 - rc.ch3_offset) / (RC_MAX - rc.ch3_offset);
+				if(abs(ch3)<0.2) ch3=0;
+				ch4 =(rc.ch4 - rc.ch4_offset) / (RC_MAX - rc.ch4_offset);
+				if(abs(ch4)<0.2) ch4=0;
 
-				speed_x = RC_K *rc_k*speed_x ;
-				speed_y = RC_K *rc_k* speed_y;
-				speed_w = RC_K * rc_k*speed_w;
-				msg.linear.x = speed_x;
-				msg.linear.y = speed_y;
-				msg.angular.z = speed_w;
-				cmdvel_pub.publish(msg);
+				sensor_msgs::Joy joy_msg;
+				joy_msg.axes.push_back(RC_K *rc_k*ch1);
+				joy_msg.axes.push_back(RC_K *rc_k*ch2);
+				joy_msg.axes.push_back(RC_K *rc_k*ch3);
+				joy_msg.axes.push_back(RC_K *rc_k*ch4);
+				joy_msg.buttons.push_back(rc.sw1);
+				joy_msg.buttons.push_back(rc.sw2);
+				joy_pub.publish(joy_msg);
+
+				speed_x = RC_K *rc_k*ch1 ;
+				speed_y = 0;
+				speed_w = RC_K * rc_k*ch2;
+
+				if(publish_cmdvel  && rc.sw1 != 1) //左侧开关拨到遥控器控制
+				{
+					msg.linear.x = speed_x;
+					msg.linear.y = speed_y;
+					msg.angular.z = speed_w;
+					cmdvel_pub.publish(msg);
+				}
+ 
 				//ROS_INFO_STREAM("speed_x: " << speed_x << " speed_y: " << speed_y << " speed_w " << speed_w);
 				return 1;
 			}

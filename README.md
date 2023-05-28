@@ -10,17 +10,26 @@
 # 下载安装
  1.安装依赖项
 
-    sudo apt-get install ros-xxxx-serial
+```
+sudo apt-get install ros-xxxx-serial
+```
 
- 2. cd catkin_ws/src
+ 2. 下载代码包并编译
 
- 3.  git clone  https://github.com/RuPingCen/rc_remotes.git
+```shell
+cd ~/catkin_ws/src
+git clone  https://github.com/RuPingCen/rc_remotes.git
+cd ..
+catkin_make
+```
 
- 4. catkin_make
+  
 
 # 参数说明
 
-- **cmdvel_topic** (发布的话题名称)
+- **cmdvel_topic** (控制命令发布的话题名称，消息类型geometry_msgs::Twist)
+
+- **joy_topic** (遥控器操作杆数据发布话题，消息类型sensor_msgs::Joy)
 
 - **dev**（串口设备名称）
 
@@ -29,6 +38,8 @@
 - **hz**（数据发布频率）
 
 - **show_message**（是否打印接收机数据）
+
+- **publish_cmdvel**（是否发布到cmd_vel话题上，0表示不发布  1表示使能发布）
 
 - **RC_K**（速度比例因子，默认为1，此时遥控器输出的速度为1、2、3m/s）
 
