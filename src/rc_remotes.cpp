@@ -44,34 +44,41 @@ union INT32Data // union的作用为实现char数组和float之间的转换
 } rc_remote_upload_counter;
 typedef struct
 {
+	uint32_t cnt;
+
 	uint16_t ch1, ch2, ch3, ch4;
 	uint16_t ch5, ch6, ch7, ch8, ch9, ch10, ch11, ch12, ch13, ch14, ch15, ch16, ch17, ch18;
 	uint8_t sw1, sw2;
 	uint16_t ch1_offset, ch2_offset, ch3_offset, ch4_offset;
 
-	uint32_t cnt;
-	uint8_t available;
-	uint8_t update;
-	uint8_t type; // 1 DJI-DBUS   2 SBUS 遥控器类型
-	uint8_t status;
+
+	 uint8_t type;	 // 1 DJI-DBUS   2 SBUS 遥控器类型
+
+	 uint8_t status; 
+	volatile uint8_t update; //表示接收到了一个新数据
+	volatile uint8_t available; //是否数据是否有效可用
+
 
 } rc_info_t;
+volatile rc_info_t rc;
 
-rc_info_t rc;
-float RC_MIN = 0, RC_MAX = 2500, RC_K = 1; //遥控器摇杆通道输出的最小值、最大值、比例系数
+
+int rc_init_flags =0;
 unsigned int init_times = 0;
 int sum_offset[4] = {0};
-int show_message =0,publish_cmdvel=0;
+
 
 struct timeval time_val; // time varible
 struct timezone tz;
 double time_stamp;
 serial::Serial ros_ser;
 ros::Publisher cmdvel_pub,joy_pub;
+int show_message =0,publish_cmdvel=0;
+float RC_MIN = 0, RC_MAX = 2500, RC_K = 1; //遥控器摇杆通道输出的最小值、最大值、比例系数
 
 bool analy_uart_recive_data(std_msgs::String serial_data);
 bool publish_cmd_vel(void);
-bool calculate_rc_offset(void);
+int calculate_rc_offset(void);
 
 int main(int argc, char **argv)
 {
@@ -91,9 +98,9 @@ int main(int argc, char **argv)
 	int baud, time_out, hz;
 	ros::init(argc, argv, "mick robot");
 	ros::NodeHandle n("~");
-	n.param<std::string>("joy_topic", joy_topic, "/rc_remote/joy");
-	n.param<std::string>("cmdvel_topic", cmdvel_topic, "/rc_remote/cmd_vel");
-	n.param<std::string>("dev", dev, "/dev/rc_remote");
+	n.param<std::string>("joy_topic", joy_topic, "/rc_remotes/joy");
+	n.param<std::string>("cmdvel_topic", cmdvel_topic, "/rc_remotes/cmd_vel");
+	n.param<std::string>("dev", dev, "/dev/rc_remotes");
 	n.param<int>("baud", baud, 115200);
 	n.param<int>("time_out", time_out, 1000);
 	n.param<int>("hz", hz, 50);
@@ -249,7 +256,7 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
 										   // cout<<"read head :" <<i<< "      len:   "<<len;
 		if (reviced_tem[0 + step] == 0xAE && reviced_tem[1 + step] == 0xEA && reviced_tem[len - 2 + step] == 0xEF && reviced_tem[len - 1 + step] == 0xFE)
 		{ //检查帧头帧尾是否完整
-			if (reviced_tem[3 + step] == 0x03)
+			if (reviced_tem[3 + step] == 0xA3)
 			{
 				i = 4 + step;
 				rc_remote_upload_counter.byte_data[3] = reviced_tem[i++];
@@ -305,114 +312,128 @@ bool analy_uart_recive_data(std_msgs::String serial_data)
 
 bool publish_cmd_vel(void)
 {
-	if (rc.update == 0x01)
+	if(rc.update != 0x01)
 	{
-		if (rc.state != 0x02) // 0 未标定   1 标定中   2标定完成
-		{
-			int flag = calculate_rc_offset();
-			if (flag == 0)
-			{
-				ROS_WARN_STREAM("calculate_rc_offset failed .... ");
-			}
-			else if (flag == 1)
-			{
-				;//ROS_WARN_STREAM("initial .... ");
-			}
-		}
-		else
-		{
-			if (rc.available == 1) 
-			{
-				geometry_msgs::Twist msg;
-				float ch1,ch2,ch3,ch4;
-				float speed_x, speed_y, speed_w;
-				float rc_k = 1;
-
-				if (rc.sw2 == 1)
-					rc_k = 1;
-				else if (rc.sw2 == 3)
-					rc_k = 2;
-				else if (rc.sw2 == 2)
-					rc_k = 3; // 3m/s
-				else
-					rc_k = 0;
-
-				ch1 = (rc.ch1 - rc.ch1_offset) / (RC_MAX - rc.ch1_offset);
-				if(abs(ch1)<0.2) ch1=0;
-				ch2 =(rc.ch2 - rc.ch2_offset) / (RC_MAX - rc.ch2_offset);
-				if(abs(ch2)<0.2) ch2=0;
-				ch3 = (rc.ch3 - rc.ch3_offset) / (RC_MAX - rc.ch3_offset);
-				if(abs(ch3)<0.2) ch3=0;
-				ch4 =(rc.ch4 - rc.ch4_offset) / (RC_MAX - rc.ch4_offset);
-				if(abs(ch4)<0.2) ch4=0;
-
-				sensor_msgs::Joy joy_msg;
-				joy_msg.axes.push_back(RC_K *rc_k*ch1);
-				joy_msg.axes.push_back(RC_K *rc_k*ch2);
-				joy_msg.axes.push_back(RC_K *rc_k*ch3);
-				joy_msg.axes.push_back(RC_K *rc_k*ch4);
-				joy_msg.buttons.push_back(rc.sw1);
-				joy_msg.buttons.push_back(rc.sw2);
-				joy_pub.publish(joy_msg);
-
-				speed_x = RC_K *rc_k*ch1 ;
-				speed_y = 0;
-				speed_w = RC_K * rc_k*ch2;
-
-				if(publish_cmdvel  && rc.sw1 != 1) //左侧开关拨到遥控器控制
-				{
-					msg.linear.x = speed_x;
-					msg.linear.y = speed_y;
-					msg.angular.z = speed_w;
-					cmdvel_pub.publish(msg);
-				}
- 
-				//ROS_INFO_STREAM("speed_x: " << speed_x << " speed_y: " << speed_y << " speed_w " << speed_w);
-				return 1;
-			}
-		}
-		rc.update = 0;
+		ROS_WARN_STREAM("rc.update != 0x01 ");
+		return false;
 	}
-	return 0;
+
+	// 0 未标定   1 标定中   2标定完成
+	if(rc_init_flags != 2)
+	{
+		ROS_WARN_STREAM("rc.state != 0x02");
+		int flag = calculate_rc_offset();
+		//ROS_WARN_STREAM("flag "<<flag<<"  rc.state "<<rc.state);
+		if(flag == 0)
+		{
+			rc_init_flags = 0 ;
+			ROS_WARN_STREAM("calculate_rc_offset failed .... ");
+		}
+		else if(flag == 1)
+		{
+			rc_init_flags =1 ;
+			ROS_WARN_STREAM("initial .... ");
+		}
+	}
+	else
+	{
+		if (rc.available == 1) 
+		{
+			geometry_msgs::Twist msg;
+			float ch1,ch2,ch3,ch4;
+			float speed_x, speed_y, speed_w;
+			float rc_k = 1;
+
+			if (rc.sw2 == 1)            rc_k = 1;
+			else if (rc.sw2 == 3)   rc_k = 2;
+			else if (rc.sw2 == 2)  	rc_k = 3; // 3m/s
+			else 				rc_k = 0;
+			
+			// 设置死区
+			ch1 = (rc.ch1 - rc.ch1_offset) / (RC_MAX - rc.ch1_offset);
+			if(abs(ch1)<0.2) ch1=0;
+			ch2 =(rc.ch2 - rc.ch2_offset) / (RC_MAX - rc.ch2_offset);
+			if(abs(ch2)<0.2) ch2=0;
+			ch3 = (rc.ch3 - rc.ch3_offset) / (RC_MAX - rc.ch3_offset);
+			if(abs(ch3)<0.2) ch3=0;
+			ch4 =(rc.ch4 - rc.ch4_offset) / (RC_MAX - rc.ch4_offset);
+			if(abs(ch4)<0.2) ch4=0;
+
+			sensor_msgs::Joy joy_msg;
+			joy_msg.axes.push_back(RC_K *rc_k*ch1);
+			joy_msg.axes.push_back(RC_K *rc_k*ch2);
+			joy_msg.axes.push_back(RC_K *rc_k*ch3);
+			joy_msg.axes.push_back(RC_K *rc_k*ch4);
+			joy_msg.buttons.push_back(rc.sw1);
+			joy_msg.buttons.push_back(rc.sw2);
+			joy_pub.publish(joy_msg);
+
+			speed_x = RC_K *rc_k*ch1 ;
+			speed_y = 0;
+			speed_w = RC_K * rc_k*ch2;
+
+			if(publish_cmdvel  && rc.sw1 != 1) //左侧开关拨到遥控器控制
+			{
+				msg.linear.x = speed_x;
+				msg.linear.y = speed_y;
+				msg.angular.z = speed_w;
+				cmdvel_pub.publish(msg);
+				ROS_INFO_STREAM("speed_x: " << speed_x << " speed_y: " << speed_y << " speed_w " << speed_w);
+			}
+			return 1;
+		}
+	}
+	rc.update = 0;
+	 
+	return 1;
 }
 
-bool calculate_rc_offset(void)
+int calculate_rc_offset(void)
 {
-	if ((rc.ch1 > 900 && rc.ch1 < 1100) && (rc.ch2 > 900 && rc.ch2 < 1100)
-			 && (rc.ch3 > 900 && rc.ch3 < 1100) && (rc.ch4 > 900 && rc.ch4 < 1100))
+	int re_flag = 0;
+	if(init_times < 20)
 	{
-		sum_offset[0] += rc.ch1;
-		sum_offset[1] += rc.ch2;
-		sum_offset[2] += rc.ch3;
-		sum_offset[3] += rc.ch4;
-		rc.state = 0x01; // 0 未标定   1 标定中   2标定完成
-		init_times++;
+		if ((rc.ch1 > 900 && rc.ch1 < 1100) && (rc.ch2 > 900 && rc.ch2 < 1100)
+			&& (rc.ch3 > 900 && rc.ch3 < 1100) && (rc.ch4 > 900 && rc.ch4 < 1100))
+		{
+			sum_offset[0] += rc.ch1;
+			sum_offset[1] += rc.ch2;
+			sum_offset[2] += rc.ch3;
+			sum_offset[3] += rc.ch4;
+			rc.available = 0;
+			rc_init_flags = 1; // 0 未标定   1 标定中   2标定完成
+			init_times++;
+			ROS_WARN_STREAM("calibrate...");
+			re_flag = 1;
+		}
 	}
-	if (init_times > 20)
+	else
 	{
 		rc.ch1_offset = sum_offset[0] / init_times;
 		rc.ch2_offset = sum_offset[1] / init_times;
 		rc.ch3_offset = sum_offset[2] / init_times;
 		rc.ch4_offset = sum_offset[3] / init_times;
-		//ROS_INFO_STREAM("ch1_offset: " <<rc. ch1_offset << " ch2_offset: " << rc.ch2_offset
-		//		 << "ch3_offset: " <<rc. ch3_offset << " ch4_offset: " << rc.ch4_offset);
+		ROS_INFO_STREAM("ch1_offset: " <<rc. ch1_offset << " ch2_offset: " << rc.ch2_offset
+				 << "ch3_offset: " <<rc. ch3_offset << " ch4_offset: " << rc.ch4_offset);
 		if (rc.ch1_offset == 0 || rc.ch2_offset == 0 || rc.ch3_offset == 0 || rc.ch4_offset == 0)
 		{
 			rc.available = 0;
-			rc.state = 0x00;
+			rc_init_flags = 0;
 			init_times = 0;
 			sum_offset[0] = 0;
 			sum_offset[1] = 0;
 			sum_offset[2] = 0;
 			sum_offset[3] = 0;
-			return 0;
+			ROS_WARN_STREAM("calibrate faild...");
+			re_flag = 0;
 		}
 		else
 		{
 			rc.available = 1;
-			rc.state = 0x02;
-			return 2; //标定成功
+			rc_init_flags = 0x02;
+			ROS_INFO_STREAM("remote calibrate successful");
+			re_flag = 2; //标定成功
 		}
 	}
-	return 1; //标定中
+	return re_flag; //标定中
 }
